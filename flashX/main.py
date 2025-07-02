@@ -1,33 +1,59 @@
-from fastapi import FastAPI, Request
-from pydantic import BaseModel
+from fastapi import FastAPI, Depends, HTTPException, Query
+from sqlmodel import SQLModel, Field, create_engine, select, Session
 
+class Hero(SQLModel, table=True):
+    id: int | None = Field(default=None, primary_key=True)
+    name: str = Field(index=True)
+    age: int | None = Field(default=None, index=True)
+    secret_name: str
+    
+sqlite_file_name = "database.db"
+sqlite_url = f"sqlite:///{sqlite_file_name}"
+
+connect_args = {"check_same_thread": False}
+engine = create_engine(sqlite_url, connect_args=connect_args)
+
+def create_db_and_tables():
+    SQLModel.metadata.create_all(engine)
+
+def get_session():
+    with Session(engine) as session:
+        yield session
+        
 app = FastAPI()
 
-class Item(BaseModel):
-    name:str
-    price: float
+@app.on_event("startup")
+def on_startup():
+    create_db_and_tables()
+    
+@app.post("/heroes/")
+def create_hero(hero: Hero, session: Session = Depends(get_session)) -> Hero:
+    session.add(hero)
+    session.commit()
+    session.refresh(hero)
+    return hero
 
-@app.get("/")
-def read_root():
-    return {"Hello": "World"}
+@app.get("/heroes/")
+def read_heroes(
+    session: Session = Depends(get_session),
+    offset: int = 0,
+    limit: int = Query(default=100, le=100),
+) -> list[Hero]:
+    heroes = session.exec(select(Hero).offset(offset).limit(limit)).all()
+    return heroes
 
-@app.get("/items/{item_id}")
-def read_item(item_id: int, q: str | None = None): #q is query string 
-    return {"item_id": item_id, "q": q}
+@app.get("/heroes/{hero_id}")
+def read_hero(hero_id:int ,session: Session = Depends(get_session)) -> Hero:
+    hero = session.get(Hero, hero_id)
+    if not hero:
+        raise HTTPException(status_code=404, detail="Hero not found")
+    return hero
 
-@app.post("/items")
-# async def create_item(request: Request):
-#     item = await request.json()   
-#     print(item["name"])            
-#     return {"request body": item }
-def create_item(item: Item):  #เชื่อม Pydantic model เข้ากับ การรับผ่าน post มา ซึ่งมันทำ automatic ไว้ว่าให้ mapping ตัวที่เป็น field และรับ request ผ่านตัวแปรที่เรียกใช้ได้เลย
-    print(item.name)    
-    return {"request body": item }
-
-@app.put("/items/{item_id}")
-def update_item(item_id: int, item: Item):
-    return { "id": item_id,"request body": item}
-
-@app.delete("/items/{item_id}")
-def delete_item(item_id: int):
-    return {"message": f"Item {item_id} deleted"}
+@app.delete("/heroes/{hero_id}")
+def delete_hero(hero_id: int, session:Session = Depends(get_session)) -> Hero:
+    hero = session.get(Hero, hero_id)
+    if not hero:
+        raise HTTPException(status_code=404, detail="Hero not found")
+    session.delete(hero)
+    session.commit()
+    return {"ok": True}
